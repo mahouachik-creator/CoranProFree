@@ -1,0 +1,24 @@
+kind = "mobile"
+previewPath = "/quran-pro-audio/"
+title = "Quran Pro Audio"
+description = "A focused mobile Quran listening experience with reciter discovery, ayah-level playback controls, repetition practice, sleep timer, and offline-ready audio state management."
+version = "1.0.0"
+id = "artifacts/quran-pro-audio"
+router = "expo-domain"
+
+[[services]]
+name = "expo"
+ensurePreviewReachable = "/status"
+paths = [ "/quran-pro-audio/" ]
+localPort = 24611
+
+[services.development]
+run = "pnpm --filter @workspace/quran-pro-audio run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/quran-pro-audio", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/quran-pro-audio", "run", "serve" ]
+
+[services.env]
+PORT = "24611"
+BASE_PATH = "/quran-pro-audio/"

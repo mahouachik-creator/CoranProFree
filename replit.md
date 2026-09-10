@@ -1,6 +1,6 @@
-# [Project name]
+# Quran Pro Audio
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Quran Pro Audio is a mobile listening experience for Quran recitations, ayah-level learning, and offline-ready playback.
 
 ## Run & Operate
 
@@ -22,15 +22,23 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/quran-pro-audio/app/` — Expo Router screens for home, library, reciters, and the full player.
+- `artifacts/quran-pro-audio/context/AudioContext.tsx` — shared playback state and local persistence.
+- `artifacts/quran-pro-audio/services/audio/` — platform-neutral contracts for playback, ayah synchronization, and downloads.
+- `artifacts/quran-pro-audio/data/quran.ts` — initial surah, ayah, and reciter catalog.
+- `artifacts/quran-pro-audio/constants/colors.ts` — dark Quran Pro Audio theme tokens.
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The first build is frontend-first and persists playback preferences with AsyncStorage; no server or database is required for the listening loop.
+- Audio playback is isolated behind platform-neutral services so AVAudioSession/ExoPlayer adapters can be added without changing screen components.
+- The mobile experience uses a single shared audio context so the mini-player, full player, and transcript remain synchronized.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Browse featured and popular surahs.
+- Open a full player with seek, skip, speed, repeat, sleep timer, waveform, and live transcript states.
+- Manage reciters and an offline library surface.
 
 ## User preferences
 

@@ -1,0 +1,1 @@
+- [Expo audio asset paths](audio-assets.md) — copy generated images into the Expo artifact before aliased static imports.
