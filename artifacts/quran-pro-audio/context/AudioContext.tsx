@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { surahs, type Surah } from '@/data/quran';
 
 type RepeatMode = 'off' | 'ayah' | 'range';
@@ -15,6 +16,7 @@ type AudioContextValue = {
   completedRepeats: number;
   sleepTimerMinutes: number | null;
   isDownloaded: boolean;
+  audioError: string | null;
   play: () => void;
   pause: () => void;
   togglePlayback: () => void;
@@ -37,18 +39,52 @@ const durationFor = (surah: Surah) => {
   return minutes * 60 + seconds;
 };
 
+const audioUrlFor = (surah: Surah) =>
+  `https://everyayah.com/data/Alafasy_128kbps/${String(surah.id).padStart(3, '0')}001.mp3`;
+
 export function AudioProvider({ children }: { children: React.ReactNode }) {
   const [currentSurah, setCurrentSurah] = useState<Surah>(surahs[0]);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [position, setPosition] = useState(0);
   const [speed, setSpeedState] = useState(1);
   const [repeatMode, setRepeatMode] = useState<RepeatMode>('off');
   const [repeatCount, setRepeatCount] = useState(1);
   const [completedRepeats, setCompletedRepeats] = useState(0);
   const [sleepTimerMinutes, setSleepTimerMinutes] = useState<number | null>(null);
   const [downloaded, setDownloaded] = useState<Record<number, boolean>>({ 36: true });
+  const [audioError, setAudioError] = useState<string | null>(null);
+  const shouldAutoplayRef = useRef(false);
+  const player = useAudioPlayer(null, {
+    updateInterval: 250,
+    preferredForwardBufferDuration: 12,
+    keepAudioSessionActive: true,
+  });
+  const status = useAudioPlayerStatus(player);
 
   const duration = durationFor(currentSurah);
+
+  useEffect(() => {
+    setAudioModeAsync({
+      playsInSilentMode: true,
+      interruptionMode: 'doNotMix',
+      shouldPlayInBackground: true,
+      allowsRecording: false,
+      shouldRouteThroughEarpiece: false,
+    }).catch((error: unknown) => {
+      setAudioError(error instanceof Error ? error.message : 'Unable to configure audio output.');
+    });
+  }, []);
+
+  useEffect(() => {
+    setAudioError(null);
+    try {
+      player.replace(audioUrlFor(currentSurah));
+      if (shouldAutoplayRef.current) {
+        shouldAutoplayRef.current = false;
+        player.play();
+      }
+    } catch (error) {
+      setAudioError(error instanceof Error ? error.message : 'Unable to load this recitation.');
+    }
+  }, [currentSurah.id, player]);
 
   useEffect(() => {
     AsyncStorage.getItem(AUDIO_STATE_KEY)
@@ -82,37 +118,29 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
   }, [currentSurah.id, speed, repeatCount, downloaded]);
 
   useEffect(() => {
-    if (!isPlaying) return;
-    const timer = setInterval(() => {
-      setPosition((current) => {
-        const next = current + speed;
-        if (next < duration) return next;
-        if (repeatMode !== 'off' && completedRepeats + 1 < repeatCount) {
-          setCompletedRepeats((count) => count + 1);
-          return 0;
-        }
-        setCompletedRepeats(0);
-        setIsPlaying(false);
-        return duration;
-      });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [completedRepeats, duration, isPlaying, repeatCount, repeatMode, speed]);
+    if (!status.didJustFinish) return;
+    if (repeatMode !== 'off' && completedRepeats + 1 < repeatCount) {
+      setCompletedRepeats((count) => count + 1);
+      void player.seekTo(0);
+      player.play();
+      return;
+    }
+    setCompletedRepeats(0);
+  }, [completedRepeats, player, repeatCount, repeatMode, status.didJustFinish]);
 
   useEffect(() => {
-    if (!sleepTimerMinutes || !isPlaying) return;
+    if (!sleepTimerMinutes || !status.playing) return;
     const timer = setTimeout(() => {
-      setIsPlaying(false);
+      player.pause();
       setSleepTimerMinutes(null);
     }, sleepTimerMinutes * 60 * 1000);
     return () => clearTimeout(timer);
-  }, [isPlaying, sleepTimerMinutes]);
+  }, [player, sleepTimerMinutes, status.playing]);
 
   const selectSurah = (surah: Surah) => {
+    shouldAutoplayRef.current = true;
     setCurrentSurah(surah);
-    setPosition(0);
     setCompletedRepeats(0);
-    setIsPlaying(true);
   };
 
   const stepSurah = (direction: 1 | -1) => {
@@ -124,23 +152,38 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<AudioContextValue>(
     () => ({
       currentSurah,
-      isPlaying,
-      position,
-      duration,
+      isPlaying: status.playing,
+      position: status.currentTime,
+      duration: status.duration || duration,
       speed,
       repeatMode,
       repeatCount,
       completedRepeats,
       sleepTimerMinutes,
       isDownloaded: !!downloaded[currentSurah.id],
-      play: () => setIsPlaying(true),
-      pause: () => setIsPlaying(false),
-      togglePlayback: () => setIsPlaying((playing) => !playing),
-      seek: (seconds) => setPosition(Math.max(0, Math.min(duration, seconds))),
+      audioError,
+      play: () => {
+        setAudioError(null);
+        player.play();
+      },
+      pause: () => player.pause(),
+      togglePlayback: () => {
+        if (status.playing) player.pause();
+        else {
+          setAudioError(null);
+          player.play();
+        }
+      },
+      seek: (seconds) => {
+        void player.seekTo(Math.max(0, Math.min(status.duration || duration, seconds)));
+      },
       selectSurah,
       nextSurah: () => stepSurah(1),
       previousSurah: () => stepSurah(-1),
-      setSpeed: setSpeedState,
+      setSpeed: (nextSpeed) => {
+        setSpeedState(nextSpeed);
+        player.setPlaybackRate(nextSpeed, 'high');
+      },
       setRepeatMode: (mode) => {
         setRepeatMode(mode);
         setCompletedRepeats(0);
@@ -161,12 +204,15 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
       currentSurah,
       downloaded,
       duration,
-      isPlaying,
-      position,
+      audioError,
+      player,
       repeatCount,
       repeatMode,
       sleepTimerMinutes,
       speed,
+      status.currentTime,
+      status.duration,
+      status.playing,
     ],
   );
 
