@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, LayoutChangeEvent, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { Artwork } from '@/components/Artwork';
 import { Waveform } from '@/components/Waveform';
-import { ayahs } from '@/data/quran';
+import { getAyahs } from '@/data/quran';
 import { useAudio } from '@/context/AudioContext';
 import { useColors } from '@/hooks/useColors';
 
@@ -22,38 +22,51 @@ export default function PlayerScreen() {
   const router = useRouter();
   const {
     currentSurah,
+    currentAyah,
     isPlaying,
+    isBuffering,
     position,
     duration,
+    progress,
     speed,
     repeatMode,
     repeatCount,
     completedRepeats,
     sleepTimerMinutes,
+    favoriteIds,
+    downloads,
+    audioError,
     togglePlayback,
     seek,
+    seekProgress,
+    seekAyah,
     nextSurah,
     previousSurah,
+    skipAyah,
     setSpeed,
     setRepeatMode,
     setRepeatCount,
     setSleepTimer,
+    toggleFavorite,
+    downloadSurah,
   } = useAudio();
   const [showOptions, setShowOptions] = useState(false);
-  const progress = duration ? position / duration : 0;
-  const activeAyah = Math.min(ayahs.length - 1, Math.floor(progress * ayahs.length));
-  const speeds = [0.75, 1, 1.25, 1.5];
-  const repeatLabel = repeatMode === 'off' ? 'Off' : repeatMode === 'ayah' ? 'Ayah' : 'Range';
+  const [waveformWidth, setWaveformWidth] = useState(1);
+  const ayahs = useMemo(() => getAyahs(currentSurah.id), [currentSurah.id]);
+  const activeAyah = Math.min(ayahs.length, Math.max(1, currentAyah));
+  const favorite = favoriteIds.includes(currentSurah.id);
+  const downloadRecord = downloads.find((record) => record.surahId === currentSurah.id);
+  const speeds = [0.5, 0.75, 1, 1.25, 1.5, 2];
+  const repeatLabel = repeatMode === 'off' ? 'Off' : repeatMode === 'ayah' ? 'Ayah' : 'Surah';
+  const isDownloading = downloadRecord?.status === 'downloading';
+  const isDownloaded = downloadRecord?.status === 'complete';
 
-  const setTimer = () => {
-    const options = [15, 30, 60];
-    const next = sleepTimerMinutes ? null : options[0];
-    setSleepTimer(next);
-  };
+  const setTimer = () => setSleepTimer(sleepTimerMinutes ? null : 15);
 
-  const onSeek = (ratio: number) => seek(ratio * duration);
+  const onWaveformLayout = (event: LayoutChangeEvent) => setWaveformWidth(event.nativeEvent.layout.width);
+  const onSeek = (locationX: number) => seekProgress(Math.max(0, Math.min(1, locationX / waveformWidth)));
 
-  const chapterDetails = useMemo(() => `${currentSurah.verses} ayahs  ·  Mishary Alafasy`, [currentSurah.verses]);
+  const chapterDetails = `${currentSurah.ayahCount} ayahs · Mishary Alafasy`;
 
   return (
     <View style={[styles.screen, { backgroundColor: colors.background, paddingTop: insets.top }]}>
@@ -72,29 +85,67 @@ export default function PlayerScreen() {
           <Artwork kind={currentSurah.cover} size={286} />
         </View>
         <View style={styles.titleBlock}>
-          <View>
+          <View style={styles.chapterCopy}>
             <Text style={[styles.chapter, { color: colors.foreground }]}>{currentSurah.transliteration}</Text>
+            <Text style={[styles.chapterArabic, { color: colors.primary }]}>{currentSurah.arabic}</Text>
             <Text style={[styles.chapterMeta, { color: colors.mutedForeground }]}>{chapterDetails}</Text>
           </View>
-          <Pressable hitSlop={10}>
-            <Feather name="heart" size={22} color={colors.mutedForeground} />
-          </Pressable>
+          <View style={styles.titleActions}>
+            <Pressable accessibilityLabel={favorite ? 'Remove favorite' : 'Add favorite'} onPress={() => toggleFavorite(currentSurah.id)} hitSlop={10}>
+              <Feather name="heart" size={21} color={favorite ? colors.accent : colors.mutedForeground} />
+            </Pressable>
+            <Pressable
+              accessibilityLabel={isDownloaded ? 'Remove offline audio in Library' : 'Download this surah for offline listening'}
+              onPress={() => {
+                if (!isDownloaded && !isDownloading) void downloadSurah(currentSurah);
+                else router.push('/library');
+              }}
+              hitSlop={10}
+            >
+              {isDownloading ? (
+                <ActivityIndicator size="small" color={colors.primary} />
+              ) : (
+                <Feather name={isDownloaded ? 'check-circle' : 'download'} size={20} color={isDownloaded ? colors.primary : colors.mutedForeground} />
+              )}
+            </Pressable>
+          </View>
         </View>
 
-        <View style={styles.waveform}>
+        <View style={styles.waveform} onLayout={onWaveformLayout}>
           <Waveform progress={progress} />
-          <Pressable testID="seek-track" onPress={(event) => onSeek(event.nativeEvent.locationX / 320)} style={styles.seekOverlay} />
+          <Pressable
+            testID="seek-track"
+            accessibilityLabel="Seek within this surah"
+            onPress={(event) => onSeek(event.nativeEvent.locationX)}
+            style={styles.seekOverlay}
+          />
         </View>
         <View style={styles.timeRow}>
-          <Text style={[styles.time, { color: colors.foreground }]}>{formatTime(position)}</Text>
-          <Text style={[styles.time, { color: colors.mutedForeground }]}>-{formatTime(duration - position)}</Text>
+          <Text style={[styles.time, { color: colors.foreground }]}>
+            Ayah {activeAyah} / {currentSurah.ayahCount}
+          </Text>
+          <Text style={[styles.time, { color: colors.mutedForeground }]}>
+            {isBuffering ? 'Loading audio…' : `${formatTime(position)} / ${formatTime(duration)}`}
+          </Text>
         </View>
 
+        {audioError && (
+          <View style={[styles.errorCard, { backgroundColor: colors.card, borderColor: colors.destructive }]}>
+            <Feather name="alert-circle" size={16} color={colors.destructive} />
+            <Text style={[styles.errorText, { color: colors.destructive }]}>{audioError}</Text>
+          </View>
+        )}
+
         <View style={styles.controls}>
-          <Pressable onPress={previousSurah} hitSlop={14}><Feather name="skip-back" size={23} color={colors.foreground} /></Pressable>
-          <Pressable onPress={() => seek(Math.max(0, position - 15))} hitSlop={12}><Feather name="rotate-ccw" size={20} color={colors.mutedForeground} /></Pressable>
+          <Pressable accessibilityLabel="Previous surah" onPress={previousSurah} hitSlop={14}>
+            <Feather name="skip-back" size={23} color={colors.foreground} />
+          </Pressable>
+          <Pressable accessibilityLabel="Previous ayah" onPress={() => skipAyah(-1)} hitSlop={12}>
+            <Feather name="rewind" size={20} color={colors.mutedForeground} />
+          </Pressable>
           <Pressable
             testID="main-play-button"
+            accessibilityLabel={isPlaying ? 'Pause recitation' : 'Play recitation'}
             onPress={async () => {
               await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
               togglePlayback();
@@ -103,8 +154,12 @@ export default function PlayerScreen() {
           >
             <Feather name={isPlaying ? 'pause' : 'play'} size={26} color={colors.primaryForeground} />
           </Pressable>
-          <Pressable onPress={() => seek(Math.min(duration, position + 15))} hitSlop={12}><Feather name="rotate-cw" size={20} color={colors.mutedForeground} /></Pressable>
-          <Pressable onPress={nextSurah} hitSlop={14}><Feather name="skip-forward" size={23} color={colors.foreground} /></Pressable>
+          <Pressable accessibilityLabel="Next ayah" onPress={() => skipAyah(1)} hitSlop={12}>
+            <Feather name="fast-forward" size={20} color={colors.mutedForeground} />
+          </Pressable>
+          <Pressable accessibilityLabel="Next surah" onPress={nextSurah} hitSlop={14}>
+            <Feather name="skip-forward" size={23} color={colors.foreground} />
+          </Pressable>
         </View>
 
         <View style={[styles.toolRow, { borderTopColor: colors.border, borderBottomColor: colors.border }]}>
@@ -112,7 +167,7 @@ export default function PlayerScreen() {
             <Feather name="repeat" size={18} color={repeatMode === 'off' ? colors.mutedForeground : colors.accent} />
             <Text style={[styles.toolLabel, { color: repeatMode === 'off' ? colors.mutedForeground : colors.accent }]}>{repeatLabel}</Text>
           </Pressable>
-          <Pressable style={styles.tool} onPress={() => setTimer()}>
+          <Pressable style={styles.tool} onPress={setTimer}>
             <Feather name="moon" size={18} color={sleepTimerMinutes ? colors.accent : colors.mutedForeground} />
             <Text style={[styles.toolLabel, { color: sleepTimerMinutes ? colors.accent : colors.mutedForeground }]}>{sleepTimerMinutes ? `${sleepTimerMinutes} min` : 'Sleep'}</Text>
           </Pressable>
@@ -149,21 +204,24 @@ export default function PlayerScreen() {
         )}
 
         <View style={styles.ayahHeader}>
-          <Text style={[styles.ayahHeading, { color: colors.foreground }]}>Live transcript</Text>
+          <Text style={[styles.ayahHeading, { color: colors.foreground }]}>Complete surah text</Text>
           <View style={[styles.livePill, { backgroundColor: colors.secondary }]}>
-            <View style={[styles.liveDot, { backgroundColor: colors.primary }]} />
-            <Text style={[styles.liveText, { color: colors.primary }]}>SYNCED</Text>
+            <View style={[styles.liveDot, { backgroundColor: isPlaying ? colors.primary : colors.mutedForeground }]} />
+            <Text style={[styles.liveText, { color: isPlaying ? colors.primary : colors.mutedForeground }]}>{isBuffering ? 'LOADING' : 'AYAH SYNC'}</Text>
           </View>
         </View>
         <View style={[styles.transcript, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          {ayahs.map((ayah, index) => (
-            <View key={ayah.id} style={[styles.ayah, index === activeAyah && { backgroundColor: colors.secondary, borderRadius: 14 }]}>
-              <Text style={[styles.ayahNumber, { color: index === activeAyah ? colors.accent : colors.mutedForeground }]}>{ayah.id}</Text>
+          {ayahs.map((ayah) => (
+            <Pressable
+              key={ayah.id}
+              onPress={() => seekAyah(ayah.id)}
+              style={[styles.ayah, ayah.id === activeAyah && { backgroundColor: colors.secondary, borderRadius: 14 }]}
+            >
+              <Text style={[styles.ayahNumber, { color: ayah.id === activeAyah ? colors.accent : colors.mutedForeground }]}>{ayah.id}</Text>
               <View style={styles.ayahCopy}>
-                <Text style={[styles.ayahArabic, { color: index === activeAyah ? colors.foreground : colors.mutedForeground }]}>{ayah.arabic}</Text>
-                <Text style={[styles.ayahTranslation, { color: colors.mutedForeground }]}>{ayah.translation}</Text>
+                <Text style={[styles.ayahArabic, { color: ayah.id === activeAyah ? colors.foreground : colors.mutedForeground }]}>{ayah.arabic}</Text>
               </View>
-            </View>
+            </Pressable>
           ))}
         </View>
       </ScrollView>
@@ -177,14 +235,19 @@ const styles = StyleSheet.create({
   topTitle: { fontSize: 10, fontWeight: '700', letterSpacing: 1.5 },
   iconButton: { width: 30, height: 30, alignItems: 'center', justifyContent: 'center' },
   content: { paddingHorizontal: 25 },
-  artworkWrap: { alignItems: 'center', marginTop: 20, marginBottom: 29 },
+  artworkWrap: { alignItems: 'center', marginTop: 20, marginBottom: 25 },
   titleBlock: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  chapterCopy: { flex: 1, gap: 4 },
   chapter: { fontSize: 26, fontWeight: '600', letterSpacing: -0.6 },
-  chapterMeta: { fontSize: 12, marginTop: 5 },
-  waveform: { height: 55, marginTop: 29, position: 'relative', justifyContent: 'center' },
+  chapterArabic: { fontSize: 17, textAlign: 'left' },
+  chapterMeta: { fontSize: 12, marginTop: 2 },
+  titleActions: { flexDirection: 'row', alignItems: 'center', gap: 18, paddingLeft: 12 },
+  waveform: { height: 55, marginTop: 24, position: 'relative', justifyContent: 'center' },
   seekOverlay: StyleSheet.absoluteFill,
   timeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
   time: { fontSize: 10, fontVariant: ['tabular-nums'] },
+  errorCard: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderRadius: 12, padding: 10, marginTop: 14 },
+  errorText: { flex: 1, fontSize: 11, lineHeight: 16 },
   controls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 21 },
   mainPlay: { width: 62, height: 62, borderRadius: 31, alignItems: 'center', justifyContent: 'center' },
   toolRow: { flexDirection: 'row', justifyContent: 'space-around', borderTopWidth: 1, borderBottomWidth: 1, marginTop: 27, paddingVertical: 17 },
@@ -205,8 +268,7 @@ const styles = StyleSheet.create({
   liveText: { fontSize: 8, fontWeight: '700', letterSpacing: 1 },
   transcript: { borderRadius: 18, borderWidth: 1, padding: 7 },
   ayah: { flexDirection: 'row', padding: 12, gap: 12 },
-  ayahNumber: { fontSize: 11, fontWeight: '700', width: 16, paddingTop: 3 },
+  ayahNumber: { fontSize: 11, fontWeight: '700', width: 24, paddingTop: 3 },
   ayahCopy: { flex: 1, alignItems: 'flex-end', gap: 6 },
-  ayahArabic: { fontSize: 19, textAlign: 'right', lineHeight: 31 },
-  ayahTranslation: { alignSelf: 'stretch', fontSize: 11, lineHeight: 17, textAlign: 'left' },
+  ayahArabic: { fontSize: 19, textAlign: 'right', lineHeight: 33 },
 });

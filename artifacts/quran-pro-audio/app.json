@@ -14,7 +14,7 @@
     "web": {
       "favicon": "./assets/images/icon.png"
     },
-    "plugins": ["expo-router", "expo-audio"],
+    "plugins": ["expo-router", ["expo-audio", { "enableBackgroundPlayback": true }]],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true

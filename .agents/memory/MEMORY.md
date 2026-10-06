@@ -1,1 +1,2 @@
 - [Expo audio asset paths](audio-assets.md) — copy generated images into the Expo artifact before aliased static imports.
+- [Expo build environment](expo-build-environment.md) — the optional React Native DevTools can fail on missing GLib; Expo bundles still succeed, but port 8081 can collide with the mockup server.

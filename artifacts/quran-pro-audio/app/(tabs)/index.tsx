@@ -65,7 +65,7 @@ export default function HomeScreen() {
                 <Text style={[styles.featuredTitle, { color: colors.foreground }]}>{featured.transliteration}</Text>
                 <Text style={[styles.featuredSubtitle, { color: colors.mutedForeground }]}>{featured.translation}</Text>
                 <View style={styles.featuredBottom}>
-                  <Text style={[styles.duration, { color: colors.mutedForeground }]}>{featured.duration} · {featured.verses} ayahs</Text>
+                  <Text style={[styles.duration, { color: colors.mutedForeground }]}>{featured.verses} ayahs</Text>
                   <View style={[styles.circlePlay, { backgroundColor: colors.primary }]}>
                     <Feather name={isPlaying && currentSurah.id === featured.id ? 'pause' : 'play'} size={17} color={colors.primaryForeground} />
                   </View>

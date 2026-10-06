@@ -23,22 +23,22 @@ Quran Pro Audio is a mobile listening experience for Quran recitations, ayah-lev
 ## Where things live
 
 - `artifacts/quran-pro-audio/app/` — Expo Router screens for home, library, reciters, and the full player.
-- `artifacts/quran-pro-audio/context/AudioContext.tsx` — shared playback state and local persistence.
-- `artifacts/quran-pro-audio/services/audio/` — platform-neutral contracts for playback, ayah synchronization, and downloads.
-- `artifacts/quran-pro-audio/data/quran.ts` — initial surah, ayah, and reciter catalog.
+- `artifacts/quran-pro-audio/context/AudioContext.tsx` — shared ayah-level playback, favorites, playlists, and local state.
+- `artifacts/quran-pro-audio/services/audio/` — playback contracts and persistent audio downloads.
+- `artifacts/quran-pro-audio/data/quran.ts` plus `data/quran-part-*.ts` — complete 114-surah Arabic text catalog.
 - `artifacts/quran-pro-audio/constants/colors.ts` — dark Quran Pro Audio theme tokens.
 
 ## Architecture decisions
 
-- The first build is frontend-first and persists playback preferences with AsyncStorage; no server or database is required for the listening loop.
-- Audio playback is isolated behind platform-neutral services so AVAudioSession/ExoPlayer adapters can be added without changing screen components.
+- The app uses Expo Audio playlists with one EveryAyah MP3 per verse so playback and transcript highlighting cover the full surah.
+- Favorites, playlists, playback preferences, and download manifests persist with AsyncStorage; audio files live in the app's document storage.
 - The mobile experience uses a single shared audio context so the mini-player, full player, and transcript remain synchronized.
 
 ## Product
 
-- Browse featured and popular surahs.
-- Open a full player with seek, skip, speed, repeat, sleep timer, waveform, and live transcript states.
-- Manage reciters and an offline library surface.
+- Browse all 114 surahs and all 6,236 ayahs.
+- Play full surahs continuously, with ayah-level transcript synchronization, speed, repeat, and sleep controls.
+- Save favorites and custom playlists; download, pause, resume, and remove complete surah audio for offline playback.
 
 ## User preferences
 
@@ -46,7 +46,7 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- EveryAyah recitations are separate MP3s per ayah; keep the padded surah/ayah URL pattern and build the complete queue instead of playing only ayah 1.
 
 ## Pointers
 

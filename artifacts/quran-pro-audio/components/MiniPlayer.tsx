@@ -8,8 +8,7 @@ import { useColors } from '@/hooks/useColors';
 export function MiniPlayer() {
   const colors = useColors();
   const router = useRouter();
-  const { currentSurah, isPlaying, position, duration, togglePlayback } = useAudio();
-  const progress = duration ? position / duration : 0;
+  const { currentSurah, currentAyah, progress, isPlaying, togglePlayback } = useAudio();
 
   return (
     <Pressable
@@ -19,7 +18,7 @@ export function MiniPlayer() {
     >
       <Artwork kind={currentSurah.cover} size={48} />
       <View style={styles.copy}>
-        <Text style={[styles.kicker, { color: colors.mutedForeground }]}>NOW PLAYING</Text>
+        <Text style={[styles.kicker, { color: colors.mutedForeground }]}>{`AYAH ${currentAyah} / ${currentSurah.ayahCount}`}</Text>
         <Text style={[styles.title, { color: colors.foreground }]} numberOfLines={1}>
           {currentSurah.transliteration}
         </Text>
