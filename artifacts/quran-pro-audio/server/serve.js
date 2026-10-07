@@ -130,6 +130,13 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
   let pathname = url.pathname;
 
+  if (!basePath && (pathname === '/quran-pro-audio' || pathname.startsWith('/quran-pro-audio/'))) {
+    const redirectedPath = pathname.slice('/quran-pro-audio'.length) || '/';
+    res.writeHead(308, { location: `${redirectedPath}${url.search}` });
+    res.end();
+    return;
+  }
+
   if (basePath && pathname.startsWith(basePath)) {
     pathname = pathname.slice(basePath.length) || '/';
   }

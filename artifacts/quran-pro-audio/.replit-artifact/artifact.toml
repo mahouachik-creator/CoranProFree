@@ -1,5 +1,5 @@
 kind = "mobile"
-previewPath = "/quran-pro-audio/"
+previewPath = "/"
 title = "Quran Pro Audio"
 description = "A focused mobile Quran listening experience with reciter discovery, ayah-level playback controls, repetition practice, sleep timer, and offline-ready audio state management."
 version = "1.0.0"
@@ -9,7 +9,7 @@ router = "expo-domain"
 [[services]]
 name = "expo"
 ensurePreviewReachable = "/status"
-paths = [ "/quran-pro-audio/" ]
+paths = [ "/" ]
 localPort = 24611
 
 [services.development]
@@ -21,4 +21,4 @@ run = [ "pnpm", "--filter", "@workspace/quran-pro-audio", "run", "serve" ]
 
 [services.env]
 PORT = "24611"
-BASE_PATH = "/quran-pro-audio/"
+BASE_PATH = "/"

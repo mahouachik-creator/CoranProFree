@@ -78,10 +78,18 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
   const [storageReady, setStorageReady] = useState(false);
   const tracksRef = useRef<Track[]>([]);
   const queueSurahsRef = useRef<Surah[]>([]);
+  const continueAfterQueueRef = useRef(false);
+  const playbackIntentRef = useRef(false);
+  const lastAutoAdvancedIndexRef = useRef<number | null>(null);
   const playbackUrisRef = useRef<Set<string>>(new Set());
   const queueGenerationRef = useRef(0);
 
-  const player = useAudioPlaylist({ sources: [], updateInterval: 250, loop: 'none' });
+  const player = useAudioPlaylist({
+    sources: [],
+    updateInterval: 250,
+    loop: 'none',
+    crossOrigin: 'anonymous',
+  });
   const status = useAudioPlaylistStatus(player);
   const repeatModeRef = useRef(repeatMode);
   const repeatCountRef = useRef(repeatCount);
@@ -91,7 +99,7 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
   speedRef.current = speed;
 
   const playSurahs = useCallback(
-    async (items: Surah[], autoplay: boolean) => {
+    async (items: Surah[], autoplay: boolean, continueAfterLastSurah = false) => {
       if (!items.length) return;
       const generation = ++queueGenerationRef.current;
       setAudioError(null);
@@ -144,6 +152,9 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
           }
         }
 
+        playbackIntentRef.current = autoplay;
+        continueAfterQueueRef.current = continueAfterLastSurah;
+        lastAutoAdvancedIndexRef.current = null;
         player.pause();
         player.clear();
         tracksRef.current = tracks;
@@ -205,7 +216,7 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
         setFavoriteIds(favoriteList.filter((id) => surahs.some((surah) => surah.id === id)));
         setPlaylists(playlistList);
         setDownloads(storedDownloads);
-        await playSurahs([selected], false);
+        await playSurahs([selected], false, true);
         setStorageError(null);
         setStorageReady(true);
       })
@@ -243,6 +254,52 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
   }, [currentSurah.id, status.currentIndex]);
 
   useEffect(() => {
+    if (!playbackIntentRef.current || player.playing || player.isBuffering) return;
+
+    // The native players normally advance the playlist themselves. This catches
+    // a completed ayah if a platform leaves the queue paused on its final frame.
+    const activeIndex = player.currentIndex;
+    const activeTrack = tracksRef.current[activeIndex];
+    if (!activeTrack || lastAutoAdvancedIndexRef.current === activeIndex) return;
+
+    const duration = player.duration || status.duration;
+    const reachedEnd =
+      status.didJustFinish ||
+      (duration > 0 && player.currentTime >= duration - 0.35);
+    if (!reachedEnd) return;
+
+    lastAutoAdvancedIndexRef.current = activeIndex;
+    const nextTrackIndex = activeIndex + 1;
+    if (tracksRef.current[nextTrackIndex]) {
+      player.skipTo(nextTrackIndex);
+      player.play();
+      return;
+    }
+
+    if (!continueAfterQueueRef.current) {
+      playbackIntentRef.current = false;
+      return;
+    }
+
+    const currentSurahIndex = surahs.findIndex((surah) => surah.id === activeTrack.surahId);
+    const nextSurah = surahs[currentSurahIndex + 1];
+    if (nextSurah) {
+      void playSurahs([nextSurah], true, true);
+    } else {
+      playbackIntentRef.current = false;
+    }
+  }, [
+    player,
+    playSurahs,
+    status.currentIndex,
+    status.currentTime,
+    status.didJustFinish,
+    status.duration,
+    status.isBuffering,
+    status.playing,
+  ]);
+
+  useEffect(() => {
     const track = tracksRef.current[status.currentIndex];
     if (track) setCompletedRepeats(Math.max(0, track.repeatIteration - 1));
     if (status.didJustFinish && repeatMode !== 'off') setCompletedRepeats(repeatCount);
@@ -252,6 +309,7 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!sleepTimerMinutes || !status.playing) return;
     const timer = setTimeout(() => {
+      playbackIntentRef.current = false;
       player.pause();
       setSleepTimerMinutes(null);
     }, sleepTimerMinutes * 60 * 1000);
@@ -300,11 +358,11 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
     const selected = playlist.surahIds
       .map((id) => surahs.find((surah) => surah.id === id))
       .filter((surah): surah is Surah => !!surah);
-    void playSurahs(selected, true);
+    void playSurahs(selected, true, false);
   }, [playSurahs, playlists]);
 
   const selectSurah = useCallback((surah: Surah) => {
-    void playSurahs([surah], true);
+    void playSurahs([surah], true, true);
   }, [playSurahs]);
 
   const rebuildQueueForRepeat = useCallback(() => {
@@ -312,8 +370,9 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
     if (!items.length) return;
     const activeTrack = tracksRef.current[status.currentIndex];
     const currentTime = status.currentTime;
-    const wasPlaying = status.playing;
-    void playSurahs(items, false).then(async () => {
+    const shouldResume = playbackIntentRef.current;
+    const continueAfterLastSurah = continueAfterQueueRef.current;
+    void playSurahs(items, false, continueAfterLastSurah).then(async () => {
       if (activeTrack) {
         const target = tracksRef.current.findIndex(
           (track) => track.surahId === activeTrack.surahId && track.ayahId === activeTrack.ayahId,
@@ -323,9 +382,12 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
           if (currentTime > 0) await player.seekTo(currentTime);
         }
       }
-      if (wasPlaying) player.play();
+      if (shouldResume) {
+        playbackIntentRef.current = true;
+        player.play();
+      }
     });
-  }, [playSurahs, player, status.currentIndex, status.currentTime, status.playing]);
+  }, [playSurahs, player, status.currentIndex, status.currentTime]);
 
   const stepSurah = useCallback((direction: -1 | 1) => {
     const index = surahs.findIndex((surah) => surah.id === currentSurah.id);
@@ -363,13 +425,21 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
     downloads,
     play: () => {
       setAudioError(null);
+      playbackIntentRef.current = true;
       player.play();
     },
-    pause: () => player.pause(),
+    pause: () => {
+      playbackIntentRef.current = false;
+      player.pause();
+    },
     togglePlayback: () => {
-      if (status.playing) player.pause();
+      if (status.playing) {
+        playbackIntentRef.current = false;
+        player.pause();
+      }
       else {
         setAudioError(null);
+        playbackIntentRef.current = true;
         player.play();
       }
     },
