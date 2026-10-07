@@ -78,6 +78,7 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
   const [storageReady, setStorageReady] = useState(false);
   const tracksRef = useRef<Track[]>([]);
   const queueSurahsRef = useRef<Surah[]>([]);
+  const queueReplacementInProgressRef = useRef(false);
   const continueAfterQueueRef = useRef(false);
   const playbackIntentRef = useRef(false);
   const lastAutoAdvancedIndexRef = useRef<number | null>(null);
@@ -155,6 +156,7 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
         playbackIntentRef.current = autoplay;
         continueAfterQueueRef.current = continueAfterLastSurah;
         lastAutoAdvancedIndexRef.current = null;
+        queueReplacementInProgressRef.current = true;
         player.pause();
         player.clear();
         tracksRef.current = tracks;
@@ -167,8 +169,10 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
         player.loop = 'none';
         player.skipTo(0);
         player.playbackRate = speedRef.current;
+        queueReplacementInProgressRef.current = false;
         if (autoplay) player.play();
       } catch (error) {
+        queueReplacementInProgressRef.current = false;
         audioDownloadManager.retainPlaybackUris(playbackUrisRef.current);
         setAudioError(error instanceof Error ? error.message : 'Impossible de charger cette récitation.');
       }
@@ -232,6 +236,22 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
       active = false;
     };
   }, [playSurahs]);
+
+  useEffect(() => {
+    const subscription = player.addListener('trackChanged', ({ currentIndex }) => {
+      if (
+        !playbackIntentRef.current ||
+        queueReplacementInProgressRef.current ||
+        !tracksRef.current[currentIndex]
+      ) {
+        return;
+      }
+
+      // Keep autoplay intent across native/web playlist item boundaries.
+      player.play();
+    });
+    return () => subscription.remove();
+  }, [player]);
 
   useEffect(() => {
     if (!storageReady) return;

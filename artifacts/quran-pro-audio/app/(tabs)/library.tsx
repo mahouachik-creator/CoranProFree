@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   FlatList,
   Modal,
   Pressable,
@@ -16,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { Artwork } from '@/components/Artwork';
 import { MiniPlayer } from '@/components/MiniPlayer';
+import { SurahDownloadButton } from '@/components/SurahDownloadButton';
 import { reciters, surahs, type Surah } from '@/data/quran';
 import { useAudio, type UserPlaylist } from '@/context/AudioContext';
 import { useColors } from '@/hooks/useColors';
@@ -156,6 +156,17 @@ export default function LibraryScreen() {
 
     return (
       <View style={[styles.row, { borderBottomColor: colors.border }]}>
+        <SurahDownloadButton
+          surah={item}
+          download={record}
+          busy={isStarting}
+          onPress={() => {
+            if (record?.status === 'complete') void handleRemoveDownload(item.id);
+            else if (record?.status === 'downloading') void handlePauseDownload(item.id);
+            else void startDownload(item);
+          }}
+          testID={`download-surah-${item.id}`}
+        />
         <Pressable onPress={() => void openSurah(item)} style={styles.rowMain}>
           <Artwork kind={item.cover} size={48} />
           <View style={styles.rowCopy}>
@@ -210,37 +221,6 @@ export default function LibraryScreen() {
               <Feather name={inActivePlaylist ? 'check-circle' : 'list'} size={18} color={inActivePlaylist ? colors.primary : colors.mutedForeground} />
             </Pressable>
           ) : null}
-          <Pressable
-            accessibilityLabel={
-              record?.status === 'complete'
-                ? 'Remove offline audio'
-                : record?.status === 'downloading'
-                  ? 'Pause download'
-                  : record?.status === 'paused'
-                    ? 'Resume download'
-                    : record?.status === 'error'
-                      ? 'Retry download'
-                      : 'Download audio'
-            }
-            testID={`download-surah-${item.id}`}
-            onPress={() => {
-              if (record?.status === 'complete') void handleRemoveDownload(item.id);
-              else if (record?.status === 'downloading') void handlePauseDownload(item.id);
-              else void startDownload(item);
-            }}
-            hitSlop={8}
-            style={styles.action}
-          >
-            {isStarting ? (
-              <ActivityIndicator size="small" color={colors.primary} />
-            ) : (
-              <Feather
-                name={record?.status === 'complete' ? 'check-circle' : record?.status === 'downloading' ? 'pause-circle' : 'download'}
-                size={19}
-                color={record?.status === 'complete' ? colors.primary : record?.status === 'error' ? colors.destructive : colors.mutedForeground}
-              />
-            )}
-          </Pressable>
         </View>
       </View>
     );

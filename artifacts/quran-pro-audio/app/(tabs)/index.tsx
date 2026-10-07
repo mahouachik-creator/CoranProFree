@@ -17,6 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { Artwork } from '@/components/Artwork';
 import { MiniPlayer } from '@/components/MiniPlayer';
+import { SurahDownloadButton } from '@/components/SurahDownloadButton';
 import { surahs, type Surah } from '@/data/quran';
 import { useAudio } from '@/context/AudioContext';
 import { useColors } from '@/hooks/useColors';
@@ -70,6 +71,34 @@ export default function HomeScreen() {
     setMenuSurah(null);
     setMenuMode('actions');
     setMenuError(null);
+  };
+
+  const handleCloudPress = async (surah: Surah) => {
+    const record = downloads.find((item) => item.surahId === surah.id);
+    if (record?.status === 'complete') {
+      openSurahMenu(surah);
+      return;
+    }
+
+    setMenuError(null);
+    try {
+      if (record?.status === 'downloading') {
+        await pauseDownload(surah.id);
+        return;
+      }
+
+      setStartingDownloadId(surah.id);
+      const result = await downloadSurah(surah);
+      if (result.status === 'error') {
+        openSurahMenu(surah);
+        setMenuError(result.error ?? 'The download could not be completed.');
+      }
+    } catch (error) {
+      openSurahMenu(surah);
+      setMenuError(error instanceof Error ? error.message : 'The audio could not be downloaded.');
+    } finally {
+      setStartingDownloadId((activeId) => activeId === surah.id ? null : activeId);
+    }
   };
 
   const handleDownloadAction = async () => {
@@ -135,27 +164,37 @@ export default function HomeScreen() {
               <Text style={[styles.arabicAccent, { color: colors.primary }]}>القرآن</Text>
             </View>
 
-            <Pressable
-              testID="featured-surah"
-              onPress={() => openSurah(featured)}
-              style={({ pressed }) => [styles.featured, { backgroundColor: colors.card, borderColor: colors.border, opacity: pressed ? 0.94 : 1 }]}
-            >
-              <Artwork kind={featured.cover} size={104} />
-              <View style={styles.featuredCopy}>
-                <View style={[styles.pill, { backgroundColor: colors.secondary }]}>
-                  <View style={[styles.dot, { backgroundColor: colors.accent }]} />
-                  <Text style={[styles.pillText, { color: colors.secondaryForeground }]}>MISHARY ALAFASY</Text>
-                </View>
-                <Text style={[styles.featuredTitle, { color: colors.foreground }]}>{featured.transliteration}</Text>
-                <Text style={[styles.featuredSubtitle, { color: colors.mutedForeground }]}>{featured.translation}</Text>
-                <View style={styles.featuredBottom}>
-                  <Text style={[styles.duration, { color: colors.mutedForeground }]}>{featured.verses} ayahs</Text>
-                  <View style={[styles.circlePlay, { backgroundColor: colors.primary }]}>
-                    <Feather name={isPlaying && currentSurah.id === featured.id ? 'pause' : 'play'} size={17} color={colors.primaryForeground} />
+            <View style={[styles.featured, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <SurahDownloadButton
+                surah={featured}
+                download={downloads.find((record) => record.surahId === featured.id)}
+                busy={startingDownloadId === featured.id && downloads.find((record) => record.surahId === featured.id)?.status !== 'downloading'}
+                onPress={() => { void handleCloudPress(featured); }}
+                testID={`download-cloud-${featured.id}`}
+                style={styles.featuredCloud}
+              />
+              <Pressable
+                testID="featured-surah"
+                onPress={() => openSurah(featured)}
+                style={({ pressed }) => [styles.featuredMain, { opacity: pressed ? 0.94 : 1 }]}
+              >
+                <Artwork kind={featured.cover} size={104} />
+                <View style={styles.featuredCopy}>
+                  <View style={[styles.pill, { backgroundColor: colors.secondary }]}>
+                    <View style={[styles.dot, { backgroundColor: colors.accent }]} />
+                    <Text style={[styles.pillText, { color: colors.secondaryForeground }]}>MISHARY ALAFASY</Text>
+                  </View>
+                  <Text style={[styles.featuredTitle, { color: colors.foreground }]}>{featured.transliteration}</Text>
+                  <Text style={[styles.featuredSubtitle, { color: colors.mutedForeground }]}>{featured.translation}</Text>
+                  <View style={styles.featuredBottom}>
+                    <Text style={[styles.duration, { color: colors.mutedForeground }]}>{featured.verses} ayahs</Text>
+                    <View style={[styles.circlePlay, { backgroundColor: colors.primary }]}>
+                      <Feather name={isPlaying && currentSurah.id === featured.id ? 'pause' : 'play'} size={17} color={colors.primaryForeground} />
+                    </View>
                   </View>
                 </View>
-              </View>
-            </Pressable>
+              </Pressable>
+            </View>
 
             <View style={styles.sectionHeader}>
               <Text style={[styles.sectionLabel, { color: colors.foreground }]}>Explore surahs</Text>
@@ -167,6 +206,13 @@ export default function HomeScreen() {
         }
         renderItem={({ item }) => (
           <View style={[styles.row, { borderBottomColor: colors.border }]}>
+            <SurahDownloadButton
+              surah={item}
+              download={downloads.find((record) => record.surahId === item.id)}
+              busy={startingDownloadId === item.id && downloads.find((record) => record.surahId === item.id)?.status !== 'downloading'}
+              onPress={() => { void handleCloudPress(item); }}
+              testID={`download-cloud-${item.id}`}
+            />
             <Pressable
               testID={`surah-${item.id}`}
               onPress={() => openSurah(item)}
@@ -362,6 +408,8 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 28, fontWeight: '600', lineHeight: 33, letterSpacing: -0.8 },
   arabicAccent: { fontSize: 28, marginBottom: 6 },
   featured: { borderRadius: 24, borderWidth: 1, padding: 12, flexDirection: 'row', gap: 14, marginBottom: 32 },
+  featuredMain: { flex: 1, flexDirection: 'row', gap: 14 },
+  featuredCloud: { alignSelf: 'flex-start', marginTop: 18 },
   featuredCopy: { flex: 1, paddingVertical: 3 },
   pill: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 5 },
   dot: { width: 5, height: 5, borderRadius: 3 },
