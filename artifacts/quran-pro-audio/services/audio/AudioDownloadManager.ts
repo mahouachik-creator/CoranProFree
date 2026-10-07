@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Directory, File, Paths } from 'expo-file-system';
-import { surahAyahUrl, surahs, type Surah } from '@/data/quran';
+import { Platform } from 'react-native';
+import { surahAyahUrl, type Surah } from '@/data/quran';
 
 export type DownloadStatus = 'queued' | 'downloading' | 'paused' | 'complete' | 'error';
 
@@ -17,11 +18,122 @@ export type DownloadRecord = {
 
 const DOWNLOADS_KEY = '@quran-pro-audio/downloads';
 const AUDIO_DIRECTORY = 'quran-audio';
+const WEB_AUDIO_SCHEME = 'quran-audio://';
+const WEB_AUDIO_DATABASE = 'quran-pro-audio';
+const WEB_AUDIO_STORE = 'audio';
+
+let webAudioDatabase: Promise<IDBDatabase> | null = null;
+
+const webAudioKey = (surahId: number, ayahId: number) =>
+  `${surahId}/${ayahId}`;
+
+const webAudioUri = (surahId: number, ayahId: number) =>
+  `${WEB_AUDIO_SCHEME}${webAudioKey(surahId, ayahId)}`;
+
+const parseWebAudioUri = (uri: string) => {
+  if (!uri.startsWith(WEB_AUDIO_SCHEME)) return null;
+  return uri.slice(WEB_AUDIO_SCHEME.length);
+};
+
+function openWebAudioDatabase(): Promise<IDBDatabase> {
+  if (typeof indexedDB === 'undefined') {
+    return Promise.reject(new Error('Offline audio storage is unavailable in this browser.'));
+  }
+  if (!webAudioDatabase) {
+    webAudioDatabase = new Promise((resolve, reject) => {
+      const request = indexedDB.open(WEB_AUDIO_DATABASE, 1);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains(WEB_AUDIO_STORE)) {
+          request.result.createObjectStore(WEB_AUDIO_STORE);
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error('Could not open offline audio storage.'));
+    });
+  }
+  return webAudioDatabase;
+}
+
+async function readWebAudioBlob(uri: string): Promise<Blob | null> {
+  const key = parseWebAudioUri(uri);
+  if (!key) return null;
+  const database = await openWebAudioDatabase();
+  return new Promise((resolve, reject) => {
+    const request = database.transaction(WEB_AUDIO_STORE, 'readonly').objectStore(WEB_AUDIO_STORE).get(key);
+    request.onsuccess = () => resolve(request.result instanceof Blob ? request.result : null);
+    request.onerror = () => reject(request.error ?? new Error('Could not read offline audio.'));
+  });
+}
+
+async function writeWebAudioBlob(uri: string, blob: Blob): Promise<void> {
+  const key = parseWebAudioUri(uri);
+  if (!key) throw new Error('Invalid offline audio location.');
+  const database = await openWebAudioDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(WEB_AUDIO_STORE, 'readwrite');
+    transaction.objectStore(WEB_AUDIO_STORE).put(blob, key);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error('Could not save offline audio.'));
+    transaction.onabort = () => reject(transaction.error ?? new Error('Offline audio storage was interrupted.'));
+  });
+}
+
+async function deleteWebAudioBlob(uri: string): Promise<void> {
+  const key = parseWebAudioUri(uri);
+  if (!key) return;
+  const database = await openWebAudioDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(WEB_AUDIO_STORE, 'readwrite');
+    transaction.objectStore(WEB_AUDIO_STORE).delete(key);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error('Could not remove offline audio.'));
+    transaction.onabort = () => reject(transaction.error ?? new Error('Removing offline audio was interrupted.'));
+  });
+}
+
+async function downloadWebAudio(
+  url: string,
+  uri: string,
+  signal: AbortSignal,
+  onProgress: (bytesWritten: number, totalBytes: number) => void,
+): Promise<number> {
+  const response = await fetch(url, { signal });
+  if (!response.ok) throw new Error(`Audio server returned HTTP ${response.status}.`);
+  const totalBytes = Number(response.headers.get('content-length')) || 0;
+  const contentType = response.headers.get('content-type') ?? 'audio/mpeg';
+  const chunks: BlobPart[] = [];
+  let bytesWritten = 0;
+
+  if (response.body) {
+    const reader = response.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (signal.aborted) throw new DOMException('Download paused', 'AbortError');
+      if (!value) continue;
+      chunks.push(value);
+      bytesWritten += value.byteLength;
+      onProgress(bytesWritten, totalBytes);
+    }
+  } else {
+    const buffer = await response.arrayBuffer();
+    if (signal.aborted) throw new DOMException('Download paused', 'AbortError');
+    chunks.push(buffer);
+    bytesWritten = buffer.byteLength;
+    onProgress(bytesWritten, totalBytes || bytesWritten);
+  }
+
+  const blob = new Blob(chunks, { type: contentType });
+  if (!blob.size) throw new Error('The audio download was empty.');
+  await writeWebAudioBlob(uri, blob);
+  return blob.size;
+}
 
 export class AudioDownloadManager {
   private controllers = new Map<number, AbortController>();
   private activeTasks = new Map<number, Promise<DownloadRecord>>();
   private writeQueue: Promise<void> = Promise.resolve();
+  private playbackObjectUrls = new Map<string, string>();
 
   async list(): Promise<DownloadRecord[]> {
     const stored = await AsyncStorage.getItem(DOWNLOADS_KEY);
@@ -47,10 +159,38 @@ export class AudioDownloadManager {
     if (!record) return {};
     const localFiles: Record<number, string> = {};
     for (const [ayahId, uri] of Object.entries(record.localFiles)) {
+      if (Platform.OS === 'web' && parseWebAudioUri(uri)) {
+        const blob = await readWebAudioBlob(uri);
+        if (blob && blob.size > 0) localFiles[Number(ayahId)] = uri;
+        continue;
+      }
       const file = new File(uri);
       if (file.exists && file.size > 0) localFiles[Number(ayahId)] = file.uri;
     }
     return localFiles;
+  }
+
+  async getPlaybackUri(storedUri: string): Promise<string | null> {
+    if (Platform.OS === 'web' && parseWebAudioUri(storedUri)) {
+      const cachedUrl = this.playbackObjectUrls.get(storedUri);
+      if (cachedUrl) return cachedUrl;
+      const blob = await readWebAudioBlob(storedUri);
+      if (!blob || blob.size === 0) return null;
+      const objectUrl = URL.createObjectURL(blob);
+      this.playbackObjectUrls.set(storedUri, objectUrl);
+      return objectUrl;
+    }
+    if (Platform.OS === 'web') return null;
+    const file = new File(storedUri);
+    return file.exists && file.size > 0 ? file.uri : null;
+  }
+
+  retainPlaybackUris(activeUris: Set<string>) {
+    for (const [storedUri, objectUrl] of this.playbackObjectUrls) {
+      if (activeUris.has(storedUri)) continue;
+      URL.revokeObjectURL(objectUrl);
+      this.playbackObjectUrls.delete(storedUri);
+    }
   }
 
   async downloadSurah(surah: Surah, onProgress?: (record: DownloadRecord) => void) {
@@ -75,6 +215,14 @@ export class AudioDownloadManager {
     await this.pause(surahId);
     const records = await this.list();
     const record = records.find((item) => item.surahId === surahId);
+    if (Platform.OS === 'web') {
+      const totalAyahs = record?.totalAyahs ?? 0;
+      for (let ayahId = 1; ayahId <= totalAyahs; ayahId += 1) {
+        await deleteWebAudioBlob(webAudioUri(surahId, ayahId));
+      }
+      await this.saveRecords(records.filter((item) => item.surahId !== surahId));
+      return;
+    }
     for (const uri of Object.values(record?.localFiles ?? {})) {
       const file = new File(uri);
       if (file.exists) file.delete();
@@ -100,21 +248,48 @@ export class AudioDownloadManager {
       updatedAt: Date.now(),
     };
 
-    const directory = new Directory(Paths.document, AUDIO_DIRECTORY, `surah-${surah.id}`);
+    const directory = Platform.OS === 'web'
+      ? null
+      : new Directory(Paths.document, AUDIO_DIRECTORY, `surah-${surah.id}`);
     try {
-      directory.create({ intermediates: true, idempotent: true });
+      directory?.create({ intermediates: true, idempotent: true });
       for (let ayahId = 1; ayahId <= surah.ayahCount; ayahId += 1) {
         if (controller.signal.aborted) throw new DOMException('Download paused', 'AbortError');
         const fileName = `${String(ayahId).padStart(3, '0')}.mp3`;
-        const destination = new File(directory, fileName);
         const knownUri = localFiles[ayahId];
-        const knownFile = knownUri ? new File(knownUri) : destination;
-        if (knownFile.exists && knownFile.size > 0) {
-          localFiles[ayahId] = knownFile.uri;
-          bytesDownloaded += knownFile.size;
+        if (Platform.OS === 'web') {
+          const storedUri = webAudioUri(surah.id, ayahId);
+          const cachedBlob = knownUri ? await readWebAudioBlob(knownUri) : null;
+          if (cachedBlob && cachedBlob.size > 0) {
+            localFiles[ayahId] = storedUri;
+            bytesDownloaded += cachedBlob.size;
+          } else {
+            const downloadedBytes = await downloadWebAudio(
+              surahAyahUrl(surah.id, ayahId),
+              storedUri,
+              controller.signal,
+              (bytesWritten, totalBytes) => {
+                onProgress?.({
+                  ...record,
+                  downloadedAyahs: Object.keys(localFiles).length,
+                  bytesDownloaded: bytesDownloaded + bytesWritten,
+                  localFiles: { ...localFiles },
+                  updatedAt: Date.now(),
+                });
+              },
+            );
+            localFiles[ayahId] = storedUri;
+            bytesDownloaded += downloadedBytes;
+          }
         } else {
-          if (destination.exists) destination.delete();
-          await File.downloadFileAsync(surahAyahUrl(surah.id, ayahId), destination, {
+          const destination = new File(directory!, fileName);
+          const knownFile = knownUri ? new File(knownUri) : null;
+          if (knownFile?.exists && knownFile.size > 0) {
+            localFiles[ayahId] = knownFile.uri;
+            bytesDownloaded += knownFile.size;
+          } else {
+            if (destination.exists) destination.delete();
+            await File.downloadFileAsync(surahAyahUrl(surah.id, ayahId), destination, {
             idempotent: true,
             signal: controller.signal,
             onProgress: ({ bytesWritten }) => {
@@ -126,9 +301,13 @@ export class AudioDownloadManager {
                 updatedAt: Date.now(),
               });
             },
-          });
-          localFiles[ayahId] = destination.uri;
-          bytesDownloaded += destination.size;
+            });
+            if (!destination.exists || destination.size === 0) {
+              throw new Error(`The audio file for ayah ${ayahId} was not saved correctly.`);
+            }
+            localFiles[ayahId] = destination.uri;
+            bytesDownloaded += destination.size;
+          }
         }
 
         record.localFiles = { ...localFiles };
@@ -175,6 +354,3 @@ export class AudioDownloadManager {
 }
 
 export const audioDownloadManager = new AudioDownloadManager();
-
-export const getSurahForDownload = (surahId: number) =>
-  surahs.find((surah) => surah.id === surahId);

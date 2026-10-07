@@ -1,6 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { setAudioModeAsync, useAudioPlaylist, useAudioPlaylistStatus } from 'expo-audio';
-import { File } from 'expo-file-system';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { surahAyahUrl, surahs, type Surah } from '@/data/quran';
 import { audioDownloadManager, type DownloadRecord } from '@/services/audio/AudioDownloadManager';
@@ -29,6 +28,7 @@ type AudioContextValue = {
   sleepTimerMinutes: number | null;
   isDownloaded: boolean;
   audioError: string | null;
+  storageError: string | null;
   favoriteIds: number[];
   playlists: UserPlaylist[];
   downloads: DownloadRecord[];
@@ -71,12 +71,14 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
   const [completedRepeats, setCompletedRepeats] = useState(0);
   const [sleepTimerMinutes, setSleepTimerMinutes] = useState<number | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
+  const [storageError, setStorageError] = useState<string | null>(null);
   const [favoriteIds, setFavoriteIds] = useState<number[]>([]);
   const [playlists, setPlaylists] = useState<UserPlaylist[]>([]);
   const [downloads, setDownloads] = useState<DownloadRecord[]>([]);
   const [storageReady, setStorageReady] = useState(false);
   const tracksRef = useRef<Track[]>([]);
   const queueSurahsRef = useRef<Surah[]>([]);
+  const playbackUrisRef = useRef<Set<string>>(new Set());
   const queueGenerationRef = useRef(0);
 
   const player = useAudioPlaylist({ sources: [], updateInterval: 250, loop: 'none' });
@@ -93,6 +95,7 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
       if (!items.length) return;
       const generation = ++queueGenerationRef.current;
       setAudioError(null);
+      const nextPlaybackUris = new Set<string>();
       try {
         const records = await audioDownloadManager.list();
         const bySurah = new Map(records.map((record) => [record.surahId, record]));
@@ -103,16 +106,20 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
           const localFiles = bySurah.get(surah.id)?.localFiles ?? {};
           for (let ayahId = 1; ayahId <= surah.ayahCount; ayahId += 1) {
             const localUri = localFiles[ayahId];
-            const localFile = localUri ? new File(localUri) : null;
-            const uri = localFile?.exists && localFile.size > 0
-              ? localFile.uri
-              : surahAyahUrl(surah.id, ayahId);
+            const localPlaybackUri = localUri
+              ? await audioDownloadManager.getPlaybackUri(localUri)
+              : null;
+            if (localPlaybackUri) nextPlaybackUris.add(localUri!);
+            const uri = localPlaybackUri ?? surahAyahUrl(surah.id, ayahId);
             baseTracks.push({ surahId: surah.id, ayahId });
             baseSources.push(uri);
           }
         }
 
-        if (generation !== queueGenerationRef.current) return;
+        if (generation !== queueGenerationRef.current) {
+          audioDownloadManager.retainPlaybackUris(playbackUrisRef.current);
+          return;
+        }
         const mode = repeatModeRef.current;
         const repetitions = mode === 'off' ? 1 : Math.max(1, repeatCountRef.current);
         const tracks: Track[] = [];
@@ -144,11 +151,14 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
         setCurrentSurah(items[0]);
         setCompletedRepeats(0);
         sources.forEach((source) => player.add(source));
+        playbackUrisRef.current = nextPlaybackUris;
+        audioDownloadManager.retainPlaybackUris(nextPlaybackUris);
         player.loop = 'none';
         player.skipTo(0);
         player.playbackRate = speedRef.current;
         if (autoplay) player.play();
       } catch (error) {
+        audioDownloadManager.retainPlaybackUris(playbackUrisRef.current);
         setAudioError(error instanceof Error ? error.message : 'Impossible de charger cette récitation.');
       }
     },
@@ -196,12 +206,15 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
         setPlaylists(playlistList);
         setDownloads(storedDownloads);
         await playSurahs([selected], false);
+        setStorageError(null);
+        setStorageReady(true);
       })
       .catch((error: unknown) => {
-        if (active) setAudioError(error instanceof Error ? error.message : 'Impossible de charger la bibliothèque locale.');
-      })
-      .finally(() => {
-        if (active) setStorageReady(true);
+        if (active) {
+          const message = error instanceof Error ? error.message : 'Impossible de charger la bibliothèque locale.';
+          setAudioError(message);
+          setStorageError(message);
+        }
       });
 
     return () => {
@@ -215,8 +228,12 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
       [AUDIO_STATE_KEY, JSON.stringify({ surahId: currentSurah.id, speed, repeatCount, repeatMode })],
       [FAVORITES_KEY, JSON.stringify(favoriteIds)],
       [PLAYLISTS_KEY, JSON.stringify(playlists)],
-    ]).catch(() => undefined);
-  }, [currentSurah.id, favoriteIds, playlists, repeatCount, speed, storageReady]);
+    ])
+      .then(() => setStorageError(null))
+      .catch((error: unknown) => {
+        setStorageError(error instanceof Error ? error.message : 'Impossible d’enregistrer les favoris et les playlists.');
+      });
+  }, [currentSurah.id, favoriteIds, playlists, repeatCount, repeatMode, speed, storageReady]);
 
   useEffect(() => {
     const track = tracksRef.current[status.currentIndex];
@@ -240,6 +257,10 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
     }, sleepTimerMinutes * 60 * 1000);
     return () => clearTimeout(timer);
   }, [player, sleepTimerMinutes, status.playing]);
+
+  useEffect(() => () => {
+    audioDownloadManager.retainPlaybackUris(new Set());
+  }, []);
 
   const toggleFavorite = useCallback((surahId: number) => {
     setFavoriteIds((ids) => ids.includes(surahId) ? ids.filter((id) => id !== surahId) : [...ids, surahId]);
@@ -336,6 +357,7 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
     sleepTimerMinutes,
     isDownloaded,
     audioError,
+    storageError,
     favoriteIds,
     playlists,
     downloads,
@@ -394,11 +416,16 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
     playPlaylist,
     downloadSurah: async (surah) => {
       setAudioError(null);
-      const record = await audioDownloadManager.downloadSurah(surah, (nextRecord) => {
-        setDownloads((items) => [...items.filter((item) => item.surahId !== nextRecord.surahId), nextRecord]);
-      });
-      setDownloads((items) => [...items.filter((item) => item.surahId !== record.surahId), record]);
-      return record;
+      try {
+        const record = await audioDownloadManager.downloadSurah(surah, (nextRecord) => {
+          setDownloads((items) => [...items.filter((item) => item.surahId !== nextRecord.surahId), nextRecord]);
+        });
+        setDownloads((items) => [...items.filter((item) => item.surahId !== record.surahId), record]);
+        return record;
+      } catch (error) {
+        setAudioError(error instanceof Error ? error.message : 'Impossible de télécharger cette sourate.');
+        throw error;
+      }
     },
     pauseDownload: async (surahId) => {
       await audioDownloadManager.pause(surahId);
@@ -428,6 +455,7 @@ export function AudioProvider({ children }: { children: React.ReactNode }) {
     rebuildQueueForRepeat,
     selectSurah,
     sleepTimerMinutes,
+    storageError,
     speed,
     status.currentIndex,
     status.currentTime,

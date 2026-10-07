@@ -9,6 +9,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { Feather } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -41,6 +42,7 @@ export default function LibraryScreen() {
     toggleSurahInPlaylist,
     playPlaylist,
     downloads,
+    storageError,
     downloadSurah,
     pauseDownload,
     removeDownload,
@@ -53,6 +55,7 @@ export default function LibraryScreen() {
   const [pendingSurah, setPendingSurah] = useState<number | null>(null);
   const [selectedPlaylist, setSelectedPlaylist] = useState<string | null>(null);
   const [busyDownloads, setBusyDownloads] = useState<number[]>([]);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const downloadBySurah = useMemo(
     () => new Map(downloads.map((record) => [record.surahId, record])),
@@ -106,11 +109,35 @@ export default function LibraryScreen() {
 
   const startDownload = async (surah: Surah) => {
     if (busyDownloads.includes(surah.id)) return;
+    setDownloadError(null);
     setBusyDownloads((ids) => [...ids, surah.id]);
     try {
-      await downloadSurah(surah);
+      const record = await downloadSurah(surah);
+      if (record.status === 'error') {
+        setDownloadError(record.error ?? `Could not download ${surah.transliteration}.`);
+      }
+    } catch (error) {
+      setDownloadError(error instanceof Error ? error.message : `Could not download ${surah.transliteration}.`);
     } finally {
       setBusyDownloads((ids) => ids.filter((id) => id !== surah.id));
+    }
+  };
+
+  const handlePauseDownload = async (surahId: number) => {
+    setDownloadError(null);
+    try {
+      await pauseDownload(surahId);
+    } catch (error) {
+      setDownloadError(error instanceof Error ? error.message : 'Could not pause this download.');
+    }
+  };
+
+  const handleRemoveDownload = async (surahId: number) => {
+    setDownloadError(null);
+    try {
+      await removeDownload(surahId);
+    } catch (error) {
+      setDownloadError(error instanceof Error ? error.message : 'Could not remove the offline audio.');
     }
   };
 
@@ -124,7 +151,7 @@ export default function LibraryScreen() {
     const record = downloadBySurah.get(item.id);
     const isFavorite = favoriteIds.includes(item.id);
     const isComplete = record?.status === 'complete';
-    const isBusy = busyDownloads.includes(item.id);
+    const isStarting = busyDownloads.includes(item.id) && record?.status !== 'downloading';
     const inActivePlaylist = !!activePlaylist?.surahIds.includes(item.id);
 
     return (
@@ -155,6 +182,7 @@ export default function LibraryScreen() {
         <View style={styles.rowActions}>
           <Pressable
             accessibilityLabel={isFavorite ? 'Remove favorite' : 'Add favorite'}
+            testID={`favorite-surah-${item.id}`}
             onPress={() => toggleFavorite(item.id)}
             hitSlop={8}
             style={styles.action}
@@ -164,6 +192,7 @@ export default function LibraryScreen() {
           {filter === 'playlists' && activePlaylist ? (
             <Pressable
               accessibilityLabel="Remove from playlist"
+              testID={`remove-playlist-surah-${item.id}`}
               onPress={() => toggleSurahInPlaylist(activePlaylist.id, item.id)}
               hitSlop={8}
               style={styles.action}
@@ -173,6 +202,7 @@ export default function LibraryScreen() {
           ) : filter !== 'offline' ? (
             <Pressable
               accessibilityLabel="Add to playlist"
+              testID={`add-playlist-surah-${item.id}`}
               onPress={() => openPlaylistPicker(item.id)}
               hitSlop={8}
               style={styles.action}
@@ -181,16 +211,27 @@ export default function LibraryScreen() {
             </Pressable>
           ) : null}
           <Pressable
-            accessibilityLabel={record?.status === 'complete' ? 'Remove offline audio' : record?.status === 'downloading' ? 'Pause download' : 'Download audio'}
+            accessibilityLabel={
+              record?.status === 'complete'
+                ? 'Remove offline audio'
+                : record?.status === 'downloading'
+                  ? 'Pause download'
+                  : record?.status === 'paused'
+                    ? 'Resume download'
+                    : record?.status === 'error'
+                      ? 'Retry download'
+                      : 'Download audio'
+            }
+            testID={`download-surah-${item.id}`}
             onPress={() => {
-              if (record?.status === 'complete') void removeDownload(item.id);
-              else if (record?.status === 'downloading') void pauseDownload(item.id);
+              if (record?.status === 'complete') void handleRemoveDownload(item.id);
+              else if (record?.status === 'downloading') void handlePauseDownload(item.id);
               else void startDownload(item);
             }}
             hitSlop={8}
             style={styles.action}
           >
-            {isBusy ? (
+            {isStarting ? (
               <ActivityIndicator size="small" color={colors.primary} />
             ) : (
               <Feather
@@ -208,6 +249,7 @@ export default function LibraryScreen() {
   const renderPlaylist = (playlist: UserPlaylist) => (
     <View key={playlist.id} style={[styles.playlistCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
       <Pressable
+        testID={`open-playlist-${playlist.id}`}
         onPress={() => {
           setSelectedPlaylist(playlist.id);
           setFilter('playlists');
@@ -222,10 +264,17 @@ export default function LibraryScreen() {
           <Text style={[styles.playlistMeta, { color: colors.mutedForeground }]}>{playlist.surahIds.length} surahs</Text>
         </View>
       </Pressable>
-      <Pressable accessibilityLabel={`Play ${playlist.name}`} onPress={() => playPlaylist(playlist.id)} style={[styles.playButton, { backgroundColor: colors.primary }]}>
+      <Pressable
+        testID={`play-playlist-${playlist.id}`}
+        accessibilityLabel={playlist.surahIds.length ? `Play ${playlist.name}` : `${playlist.name} is empty`}
+        accessibilityState={{ disabled: playlist.surahIds.length === 0 }}
+        disabled={playlist.surahIds.length === 0}
+        onPress={() => playPlaylist(playlist.id)}
+        style={[styles.playButton, { backgroundColor: colors.primary, opacity: playlist.surahIds.length ? 1 : 0.45 }]}
+      >
         <Feather name="play" size={15} color={colors.primaryForeground} />
       </Pressable>
-      <Pressable accessibilityLabel={`Delete ${playlist.name}`} onPress={() => {
+      <Pressable testID={`delete-playlist-${playlist.id}`} accessibilityLabel={`Delete ${playlist.name}`} onPress={() => {
         deletePlaylist(playlist.id);
         if (selectedPlaylist === playlist.id) setSelectedPlaylist(null);
       }} hitSlop={8} style={styles.action}>
@@ -272,6 +321,16 @@ export default function LibraryScreen() {
               </View>
               <Feather name="check-circle" size={18} color={completedDownloads.length ? colors.primary : colors.mutedForeground} />
             </View>
+            {!!downloadError && (
+              <Text accessibilityRole="alert" style={[styles.downloadError, { color: colors.destructive }]}>
+                {downloadError}
+              </Text>
+            )}
+            {!!storageError && (
+              <Text accessibilityRole="alert" style={[styles.downloadError, { color: colors.destructive }]}>
+                {storageError}
+              </Text>
+            )}
 
             <View style={styles.sectionHeading}>
               <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Reciters</Text>
@@ -307,6 +366,7 @@ export default function LibraryScreen() {
               {filterOptions.map((option) => (
                 <Pressable
                   key={option.id}
+                  testID={`library-filter-${option.id}`}
                   onPress={() => setFilter(option.id)}
                   style={[styles.filter, { backgroundColor: filter === option.id ? colors.primary : colors.secondary }]}
                 >
@@ -318,7 +378,7 @@ export default function LibraryScreen() {
             {playlists.length > 0 && filter === 'playlists' && (
               <View style={styles.playlistList}>
                 {playlists.map(renderPlaylist)}
-                <Pressable onPress={() => {
+              <Pressable testID="new-playlist" onPress={() => {
                   if (selectedPlaylist) setSelectedPlaylist(null);
                   else setCreateModalVisible(true);
                 }} style={styles.playlistHint}>
@@ -380,11 +440,12 @@ export default function LibraryScreen() {
       </View>
 
       <Modal transparent visible={createModalVisible} animationType="fade" onRequestClose={() => setCreateModalVisible(false)}>
-        <View style={styles.modalBackdrop}>
+          <KeyboardAvoidingView style={styles.modalBackdrop} behavior="padding" keyboardVerticalOffset={0}>
           <View style={[styles.modalCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <Text style={[styles.modalTitle, { color: colors.foreground }]}>New playlist</Text>
             <Text style={[styles.modalDescription, { color: colors.mutedForeground }]}>Give your listening list a name.</Text>
             <TextInput
+              testID="playlist-name-input"
               value={playlistName}
               onChangeText={setPlaylistName}
               placeholder="For example, Night listening"
@@ -399,12 +460,12 @@ export default function LibraryScreen() {
               <Pressable onPress={() => setCreateModalVisible(false)} style={[styles.modalButton, { backgroundColor: colors.secondary }]}>
                 <Text style={[styles.modalButtonText, { color: colors.secondaryForeground }]}>Cancel</Text>
               </Pressable>
-              <Pressable disabled={!playlistName.trim()} onPress={() => void saveNewPlaylist()} style={[styles.modalButton, { backgroundColor: colors.primary, opacity: playlistName.trim() ? 1 : 0.5 }]}>
+              <Pressable testID="create-playlist" disabled={!playlistName.trim()} onPress={() => void saveNewPlaylist()} style={[styles.modalButton, { backgroundColor: colors.primary, opacity: playlistName.trim() ? 1 : 0.5 }]}>
                 <Text style={[styles.modalButtonText, { color: colors.primaryForeground }]}>Create</Text>
               </Pressable>
             </View>
           </View>
-        </View>
+          </KeyboardAvoidingView>
       </Modal>
 
       <Modal transparent visible={playlistPickerVisible} animationType="fade" onRequestClose={() => setPlaylistPickerVisible(false)}>
@@ -486,6 +547,7 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 14, fontWeight: '600' },
   rowSubtitle: { fontSize: 10 },
   downloadState: { fontSize: 9, lineHeight: 13 },
+  downloadError: { fontSize: 12, lineHeight: 18, marginTop: 9 },
   rowActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   action: { width: 25, height: 32, alignItems: 'center', justifyContent: 'center' },
   empty: { alignItems: 'center', paddingVertical: 35, paddingHorizontal: 25, gap: 9 },
